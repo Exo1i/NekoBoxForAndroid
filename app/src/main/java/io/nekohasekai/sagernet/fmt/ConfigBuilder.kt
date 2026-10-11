@@ -177,7 +177,6 @@ fun buildConfig(
         dns = DNSOptions().apply {
             servers = mutableListOf()
             rules = mutableListOf()
-            independent_cache = true
         }
 
         fun autoDnsDomainStrategy(s: String): String? {
@@ -206,22 +205,13 @@ fun buildConfig(
                 }
                 endpoint_independent_nat = true
                 mtu = DataStore.mtu
-                domain_strategy = genDomainStrategy(DataStore.resolveDestination)
-                sniff = needSniff
-                sniff_override_destination = needSniffOverride
-                when (ipv6Mode) {
-                    IPv6Mode.DISABLE -> {
-                        inet4_address = listOf(VpnService.PRIVATE_VLAN4_CLIENT + "/28")
-                    }
-
-                    IPv6Mode.ONLY -> {
-                        inet6_address = listOf(VpnService.PRIVATE_VLAN6_CLIENT + "/126")
-                    }
-
-                    else -> {
-                        inet4_address = listOf(VpnService.PRIVATE_VLAN4_CLIENT + "/28")
-                        inet6_address = listOf(VpnService.PRIVATE_VLAN6_CLIENT + "/126")
-                    }
+                address = when (ipv6Mode) {
+                    IPv6Mode.DISABLE -> listOf(VpnService.PRIVATE_VLAN4_CLIENT + "/28")
+                    IPv6Mode.ONLY -> listOf(VpnService.PRIVATE_VLAN6_CLIENT + "/126")
+                    else -> listOf(
+                        VpnService.PRIVATE_VLAN4_CLIENT + "/28",
+                        VpnService.PRIVATE_VLAN6_CLIENT + "/126"
+                    )
                 }
             })
             inbounds.add(Inbound_MixedOptions().apply {
@@ -229,13 +219,11 @@ fun buildConfig(
                 tag = TAG_MIXED
                 listen = bind
                 listen_port = DataStore.mixedPort
-                domain_strategy = genDomainStrategy(DataStore.resolveDestination)
-                sniff = needSniff
-                sniff_override_destination = needSniffOverride
             })
         }
 
         outbounds = mutableListOf()
+        endpoints = mutableListOf()
 
         // init routing object
         route = RouteOptions().apply {
@@ -336,7 +324,12 @@ fun buildConfig(
                     // internal outbound
 
                     currentOutbound = when (bean) {
-                        is ConfigBean -> CustomSingBoxOption(bean.config)
+                        is ConfigBean -> CustomSingBoxOption(bean.config).let {
+                            val map = it.basicMap
+                            if (map["type"] == "wireguard") {
+                                CustomSingBoxOption(gson.toJson(migrateLegacyWireGuardOutbound(map)))
+                            } else it
+                        }
 
                         is ShadowTLSBean -> // before StandardV2RayBean
                             buildSingBoxOutboundShadowTLSBean(bean)
@@ -396,9 +389,6 @@ fun buildConfig(
                             domainListDNSDirectForce.add("full:$serverAddress")
                         }
                     }
-                    _hack_config_map["domain_strategy"] =
-                        if (forTest) "" else defaultServerDomainStrategy
-
                     _hack_config_map["tag"] = tagOut
 
                     _hack_custom_config = bean.customOutboundJson
@@ -449,7 +439,13 @@ fun buildConfig(
                     }
                 }
 
-                outbounds.add(currentOutbound)
+                if (currentOutbound is Endpoint_WireGuardOptions ||
+                    (currentOutbound as? CustomSingBoxOption)?.basicMap?.get("type") == "wireguard"
+                ) {
+                    endpoints.add(currentOutbound)
+                } else {
+                    outbounds.add(currentOutbound)
+                }
                 chainOutbounds.add(currentOutbound)
                 pastOutbound = currentOutbound
                 pastEntity = proxyEntity
@@ -568,8 +564,8 @@ fun buildConfig(
 
                     -2L -> {
                         userDNSRuleList += makeDnsRuleObj().apply {
-                            server = "dns-block"
-                            disable_cache = true
+                            action = "predefined"
+                            rcode = "NOERROR"
                         }
                     }
                 }
@@ -608,10 +604,26 @@ fun buildConfig(
             route.rule_set = route.rule_set.distinctBy { it.tag }
         }
 
+        val directDnsStrategy = autoDnsDomainStrategy(SingBoxOptionsUtil.domainStrategy("dns-direct"))
+        val remoteDnsStrategy = autoDnsDomainStrategy(SingBoxOptionsUtil.domainStrategy("dns-remote"))
+
         for (freedom in arrayOf(TAG_DIRECT, TAG_BYPASS)) outbounds.add(Outbound().apply {
             tag = freedom
             type = "direct"
+            if (directDnsStrategy != null) {
+                _hack_config_map["domain_resolver"] = mapOf(
+                    "server" to "dns-direct",
+                    "strategy" to directDnsStrategy,
+                )
+            }
         })
+
+        // Resolve server addresses of outbounds with direct DNS
+        // (replaces the legacy `outbound: any` DNS rule and the `domain_strategy` dial field)
+        route.default_domain_resolver = DomainResolveOptions().apply {
+            server = "dns-direct"
+            if (!forTest) strategy = SingBoxOptionsUtil.domainStrategy("server").ifEmpty { null }
+        }
 
         // Bypass Lookup for the first profile
         bypassDNSBeans.forEach {
@@ -642,38 +654,32 @@ fun buildConfig(
             }
         }
 
+        // DNS servers without detour connect directly
         dns.servers.add(DNSServerOptions().apply {
-            address = "rcode://success"
-            tag = "dns-block"
-        })
-
-        dns.servers.add(DNSServerOptions().apply {
-            address = "local"
+            type = "local"
             tag = "dns-local"
-            detour = TAG_DIRECT
         })
 
         directDNS.firstOrNull().let {
             dns.servers.add(DNSServerOptions().apply {
-                address = it ?: throw Exception("No direct DNS, check your settings!")
+                applyLegacyAddress(it ?: throw Exception("No direct DNS, check your settings!"))
                 tag = "dns-direct"
-                detour = TAG_DIRECT
-                address_resolver = "dns-local"
-                strategy = autoDnsDomainStrategy(SingBoxOptionsUtil.domainStrategy(tag))
+                domain_resolver = "dns-local"
             })
         }
 
         remoteDns.firstOrNull().let {
             // Always use direct DNS for urlTest
             if (!forTest) dns.servers.add(DNSServerOptions().apply {
-                address = it ?: throw Exception("No remote DNS, check your settings!")
+                applyLegacyAddress(it ?: throw Exception("No remote DNS, check your settings!"))
                 tag = "dns-remote"
-                address_resolver = "dns-direct"
-                strategy = autoDnsDomainStrategy(SingBoxOptionsUtil.domainStrategy(tag))
+                detour = TAG_PROXY
+                domain_resolver = "dns-direct"
             })
         }
 
         dns.final_ = if (forTest) "dns-direct" else "dns-remote"
+        dns.strategy = if (forTest) directDnsStrategy else remoteDnsStrategy
 
         // dns object user rules
         if (enableDnsRouting) {
@@ -694,6 +700,23 @@ fun buildConfig(
                 port = listOf(53)
                 action = "hijack-dns"
             })
+            // sniff & resolve (replaces the legacy inbound fields)
+            val sniffInbounds = if (isVPN) listOf("tun-in", TAG_MIXED) else listOf(TAG_MIXED)
+            val resolveStrategy = genDomainStrategy(DataStore.resolveDestination)
+            if (resolveStrategy.isNotEmpty()) {
+                route.rules.add(0, Rule_DefaultOptions().apply {
+                    inbound = sniffInbounds
+                    action = "resolve"
+                    strategy = resolveStrategy
+                })
+            }
+            if (needSniff) {
+                route.rules.add(0, Rule_DefaultOptions().apply {
+                    inbound = sniffInbounds
+                    action = "sniff"
+                    if (needSniffOverride) override_destination = true
+                })
+            }
             if (DataStore.bypassLanInCore) {
                 route.rules.add(Rule_DefaultOptions().apply {
                     outbound = TAG_BYPASS
@@ -708,15 +731,11 @@ fun buildConfig(
             })
             // FakeDNS obj
             if (useFakeDns) {
-                dns.fakeip = DNSFakeIPOptions().apply {
-                    enabled = true
+                dns.servers.add(DNSServerOptions().apply {
+                    type = "fakeip"
+                    tag = "dns-fake"
                     inet4_range = "198.18.0.0/15"
                     inet6_range = "fc00::/18"
-                }
-                dns.servers.add(DNSServerOptions().apply {
-                    address = "fakeip"
-                    tag = "dns-fake"
-                    strategy = "ipv4_only"
                 })
                 dns.rules.add(DNSRule_DefaultOptions().apply {
                     inbound = listOf("tun-in")
@@ -724,11 +743,6 @@ fun buildConfig(
                     disable_cache = true
                 })
             }
-            // avoid loopback
-            dns.rules.add(0, DNSRule_DefaultOptions().apply {
-                outbound = mutableListOf("any")
-                server = "dns-direct"
-            })
             // force bypass (always top DNS rule)
             if (domainListDNSDirectForce.isNotEmpty()) {
                 dns.rules.add(0, DNSRule_DefaultOptions().apply {
@@ -737,6 +751,17 @@ fun buildConfig(
                 })
             }
         }
+
+        // per-server strategies were removed with the legacy DNS server format
+        dns.rules.forEach {
+            if (it is DNSRule_DefaultOptions) when (it.server) {
+                "dns-direct" -> if (directDnsStrategy != dns.strategy) it.strategy = directDnsStrategy
+                "dns-remote" -> if (remoteDnsStrategy != dns.strategy) it.strategy = remoteDnsStrategy
+                "dns-fake" -> it.strategy = "ipv4_only"
+            }
+        }
+
+        if (endpoints.isEmpty()) endpoints = null
 
         if (!forTest) _hack_custom_config = DataStore.globalCustomConfig
     }.let {

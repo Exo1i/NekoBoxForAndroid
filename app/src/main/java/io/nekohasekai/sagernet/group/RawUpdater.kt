@@ -765,8 +765,14 @@ object RawUpdater : GroupUpdater() {
                     return listOf(json.parseTrojanGo())
                 }
 
-                json.has("outbounds") -> {
-                    return json.getJSONArray("outbounds")
+                json.has("outbounds") || json.has("endpoints") -> {
+                    val list = mutableListOf<Any>()
+                    json.optJSONArray("outbounds")?.let { list.addAll(it.filterIsInstance<JSONObject>()) }
+                    // WireGuard is an endpoint since sing-box 1.11.0
+                    json.optJSONArray("endpoints")?.let { endpoints ->
+                        list.addAll(endpoints.filterIsInstance<JSONObject>().filter { it.getStr("type") == "wireguard" })
+                    }
+                    return list
                         .filterIsInstance<JSONObject>()
                         .mapNotNull {
                             val ty = it.getStr("type")

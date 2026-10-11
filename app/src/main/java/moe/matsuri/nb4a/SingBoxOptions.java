@@ -113,6 +113,8 @@ public class SingBoxOptions {
 
         public List<SingBoxOption> outbounds;
 
+        public List<SingBoxOption> endpoints;
+
         public RouteOptions route;
 
         public ExperimentalOptions experimental;
@@ -329,8 +331,23 @@ public class SingBoxOptions {
 
     public static class DNSServerOptions extends SingBoxOption {
 
+        public String type;
+
         public String tag;
 
+        public String server;
+
+        public Integer server_port;
+
+        public String path;
+
+        public String inet4_range;
+
+        public String inet6_range;
+
+        public String domain_resolver;
+
+        // Legacy fields, removed in sing-box 1.14.0
         public String address;
 
         public String address_resolver;
@@ -1057,6 +1074,8 @@ public class SingBoxOptions {
 
         public Boolean auto_detect_interface;
 
+        public DomainResolveOptions default_domain_resolver;
+
         public Boolean override_android_vpn;
 
         public String default_interface;
@@ -1065,6 +1084,45 @@ public class SingBoxOptions {
 
     }
 
+
+    // WireGuard outbound was removed in sing-box 1.13.0, use endpoint instead
+
+    public static class Endpoint_WireGuardOptions extends Outbound {
+
+        public Integer mtu;
+
+        public List<String> address;
+
+        public String private_key;
+
+        public List<Endpoint_WireGuardPeer> peers;
+
+    }
+
+    public static class Endpoint_WireGuardPeer extends SingBoxOption {
+
+        public String address;
+
+        public Integer port;
+
+        public String public_key;
+
+        public String pre_shared_key;
+
+        public List<String> allowed_ips;
+
+        // base64 or int array
+        public String reserved;
+
+    }
+
+    public static class DomainResolveOptions extends SingBoxOption {
+
+        public String server;
+
+        public String strategy;
+
+    }
 
     public static class Rule extends SingBoxOption {
 
@@ -2804,6 +2862,9 @@ public class SingBoxOptions {
         public Integer mtu;
 
         // Generate note: Listable
+        public List<String> address;
+
+        // Generate note: Listable
         public List<String> inet4_address;
 
         // Generate note: Listable
@@ -4456,6 +4517,11 @@ public class SingBoxOptions {
 
         public String outbound;
 
+        // rule action: sniff / resolve
+        public Boolean override_destination;
+
+        public String strategy;
+
     }
 
     public static class DNSRule_DefaultOptions extends DNSRule {
@@ -4528,7 +4594,13 @@ public class SingBoxOptions {
 
         public Boolean invert;
 
+        public String action;
+
         public String server;
+
+        public String strategy;
+
+        public String rcode;
 
         public Boolean disable_cache;
 
