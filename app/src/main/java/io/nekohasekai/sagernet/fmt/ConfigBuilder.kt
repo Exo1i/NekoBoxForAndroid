@@ -691,6 +691,16 @@ fun buildConfig(
         if (forTest) {
             dns.rules = listOf()
         } else {
+            // (inserted first, so it ends up right after the DNS hijack rules below)
+            // Never send traffic for the VPN's own addresses out via direct, it loops back into tun
+            // (e.g. Android Private DNS probing DNS-over-TLS on the VPN DNS address 172.19.0.2:853)
+            if (isVPN) route.rules.add(0, Rule_DefaultOptions().apply {
+                ip_cidr = listOf(
+                    VpnService.PRIVATE_VLAN4_ROUTER + "/32",
+                    VpnService.PRIVATE_VLAN6_ROUTER + "/128"
+                )
+                action = "reject"
+            })
             // built-in DNS rules
             route.rules.add(0, Rule_DefaultOptions().apply {
                 protocol = listOf("dns")
