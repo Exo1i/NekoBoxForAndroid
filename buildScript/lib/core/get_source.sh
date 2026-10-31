@@ -9,7 +9,7 @@ pushd ..
 ####
 
 if [ ! -d "sing-box" ]; then
-  git clone --no-checkout https://github.com/Exo1i/sing-box.git
+  git clone --no-checkout https://github.com/youssefnoser/sing-box.git
 fi
 pushd sing-box
 git checkout "$COMMIT_SING_BOX"
